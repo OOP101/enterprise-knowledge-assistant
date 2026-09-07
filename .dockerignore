@@ -1,0 +1,29 @@
+# .dockerignore — 排除不必要的文件，加速构建（减小构建上下文、避免密钥/数据进入镜像）
+
+# ---- Python 运行时 ----
+.venv                # 本地虚拟环境（镜像内会重新安装依赖）
+__pycache__          # Python 字节码缓存
+*.pyc
+.pytest_cache        # pytest 缓存
+
+# ---- IDE / 工具 ----
+.idea                # PyCharm 项目配置
+.codebuddy           # 编辑器辅助数据
+
+# ---- 日志（运行期产生，无需打包）----
+server.log
+*.log
+
+# ---- 向量库备份 ----
+vector_db_backup_*
+
+# ---- 运行时数据（通过 volume 挂载，不打包进镜像）----
+data/uploads/*       # 上传的临时文档
+data/eval            # Eval 评估集
+
+# ---- 原始语料（230 份制度文档，仅本机入库用，不进入镜像）----
+公司管理常用制度合集230份
+
+# ---- 密钥与版本控制 ----
+.env                 # 环境变量（含 API Key，绝不进入镜像）
+.git

@@ -1,0 +1,37 @@
+# ==== Python ====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# ==== 环境与密钥 ====
+# 包含 LLM/Embedding API Key，严禁提交
+.env
+.env.*
+!.env.example
+
+# 运行时模型配置（含 api_key，LLMManager 运行时读写）
+config/model_config.json
+
+# ==== 运行时数据 ====
+data/
+vector_db/
+*.log
+server.log
+
+# ==== 内部资料（严禁入库）====
+公司管理常用制度合集230份/
+
+# ==== 构建产物 ====
+dist/
+build/
+*.egg
+
+# ==== 求职/简历内部材料（严禁公开）====
+docs_企业知识助手/
+.idea/
+.codebuddy/
+.workbuddy/
