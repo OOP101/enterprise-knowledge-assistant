@@ -4,9 +4,7 @@
 
 ## 界面预览
 
-| 智能问答 | 控制台（可观测） |
-|:---:|:---:|
-| ![智能问答](docs/screenshots/chat.png) | ![控制台](docs/screenshots/home.png) |
+![智能问答](docs/screenshots/chat.png)
 
 
 > 📌 **架构设计**：见 [`docs/架构设计-2.0.md`](./docs/架构设计-2.0.md)。
