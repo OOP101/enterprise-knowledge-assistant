@@ -35,3 +35,6 @@ docs_企业知识助手/
 .idea/
 .codebuddy/
 .workbuddy/
+
+# ==== 本地模型权重（95MB BGE，不入库） ====
+models/
