@@ -17,7 +17,9 @@ env/
 config/model_config.json
 
 # ==== 运行时数据 ====
-data/
+data/*
+!data/eval/
+data/eval/legacy/          # 模板生成的旧评测集（已被 LLM 事实级评测集替代）
 vector_db/
 *.log
 server.log
