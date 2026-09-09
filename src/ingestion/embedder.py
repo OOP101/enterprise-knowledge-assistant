@@ -116,6 +116,19 @@ def get_vectorstore(**kwargs: Any) -> Any:
     try:
         from langchain_chroma import Chroma
 
+        # 规避 chromadb 1.3.x + langchain_chroma 在 Windows 下的段损坏问题：
+        # 由 langchain_chroma 创建的 collection 其 hnsw 段目录只写入
+        # index_metadata.pickle，data_level0.bin 等二进制文件永不落盘，
+        # 跨进程查询报「Error loading hnsw index」。
+        # 改为原生 client 显式创建（含 hnsw 配置），langchain 仅作为读写包装。
+        import chromadb
+
+        native = chromadb.PersistentClient(path=settings.chroma_persist_dir)
+        native.get_or_create_collection(
+            name=collection_name or settings.chroma_collection,
+            metadata={"hnsw:space": "cosine"},
+        )
+
         return Chroma(
             embedding_function=get_embedding(),
             collection_name=collection_name or settings.chroma_collection,
