@@ -46,7 +46,11 @@ class Settings(BaseSettings):
 
     # ---- Vector Store ----
     vector_store: str = "chroma"  # chroma | milvus
-    chroma_persist_dir: str = str(PROJECT_ROOT / "vector_db")
+    # 注意：必须使用相对路径。chromadb(1.3.x) 的 Rust hnsw 段层在 torch 已加载的
+    # 进程中，若收到含非 ASCII 字符（如中文目录名）的绝对路径，段二进制文件会
+    # 静默不落盘（sqlite 正常），跨进程查询报「Error loading hnsw index」。
+    # 相对路径字符串在进程内由 OS 以宽字符 API 解析，不受影响（已实测验证）。
+    chroma_persist_dir: str = "vector_db"
     chroma_collection: str = "enterprise_knowledge"
     milvus_uri: str = "http://localhost:19530"
     milvus_collection: str = "enterprise_knowledge"
