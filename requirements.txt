@@ -4,9 +4,12 @@
 # =====================================================================
 
 # ---- 核心框架 ----
-langchain>=0.3.0
-langchain-core>=0.3.0
-langchain-community>=0.3.0
+# ⚠ 锁定 langchain 0.3.x 系列：1.x 与 langchain-core 0.3.x 不兼容（缺 langchain.debug
+#   属性 / 多模态 dict 校验冲突），曾导致 6-7 例单测失败。升级 langchain 前务必同步
+#   对齐 langchain-core / langgraph / langchain-community 版本矩阵并回归测试。
+langchain==0.3.27
+langchain-core==0.3.86
+langchain-community==0.4.2
 langchain-openai>=0.2.0
 langchain-text-splitters>=0.3.0
 langgraph>=0.2.0
