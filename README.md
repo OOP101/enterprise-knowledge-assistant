@@ -1,19 +1,18 @@
-# 企业知识助手 2.0
+# 企业知识助手
 
-将 SOP、技术文档转化为可查询的知识库，员工提问即可秒级获取标准答案。**2.0 升级为可观测、可评估、可扩展的多知识库 RAG 平台**：真实语义检索 + 可插拔重排序 + LLM Agent 工具闭环 + 长期记忆 + 真流式 + 认证权限 + Eval 评估体系。
+将 SOP、技术文档转化为可查询的知识库，员工提问即可秒级获取标准答案。**2.0 升级为可观测、可评估、可扩展的多知识库 RAG 平台**：真实语义检索 + 可插拔重排序 + LLM Agent 工具闭环 + 长期记忆 + 真流式 + 认证权限 + Eval 评估体系。**3.0 新增入库审核流**：AI 预筛打分 + 人工把关 + 双层存储，过审才进检索索引。
 
 ## 界面预览
 
+**智能问答**：带来源引用的多轮问答，检索结果以流程卡片呈现，可一键「发起申请」，形成「查完即办」闭环。
+
 ![智能问答](docs/screenshots/chat.png)
 
+**控制台**：文档 / 分片 / 向量库 / 模型状态，缓存命中、Token 用量与反馈统计一体化看板。
 
-> 📌 **架构设计**：见 [`docs/架构设计-2.0.md`](./docs/架构设计-2.0.md)。
-> 📌 **项目讲解与底层框架**：见 [`docs/GitHub项目讲解与底层框架.md`](./docs/GitHub项目讲解与底层框架.md)。
+![控制台](docs/screenshots/home.png)
+
 > 📌 **更新日志**：各版本变更记录见 [`CHANGELOG.md`](./CHANGELOG.md)。
-> 📌 **项目介绍**：见 [`docs/项目介绍-2.0.md`](./docs/项目介绍-2.0.md)。
-> 📌 **项目总览**（项目大纲：背景/职责/架构/API/快速开始）：见 [`docs/README-项目总览.md`](./docs/README-项目总览.md)。
-> 📌 **专业名词解释**（RAG/Agent/工程名词 + 项目落地位置）：见 [`docs/专业名词解释.md`](./docs/专业名词解释.md)。
-> 📌 **后续优化手册**（P0/P1/P2 路线图与维护约定）：见 [`docs/后续优化手册.md`](./docs/后续优化手册.md)。
 
 ## 技术栈
 
@@ -49,12 +48,13 @@
 │   ├── models/      # LLM / Embedding / Reranker 实例化
 │   ├── auth/        # JWT 认证 + RBAC（2.0）
 │   ├── kb/          # 多知识库管理（2.0）
+│   ├── review/      # 入库审核流：打分器 / 状态机 / 双层存储（v3.0）
 │   ├── eval/        # Eval 评估体系（2.0）
 │   ├── prompts/     # 提示词模板
 │   └── utils/
 ├── serve/           # FastAPI 入口与路由
 ├── vector_db/       # ChromaDB 持久化
-├── docs/            # 架构设计文档
+├── docs/            # 界面截图
 └── tests/
 ```
 
@@ -70,6 +70,8 @@ venv\Scripts\activate
 source venv/bin/activate
 
 pip install -r requirements.txt
+# ⚠ requirements 锁定 langchain 0.3.x 依赖矩阵，请勿单独升级 langchain / langgraph：
+#   1.x 与 langchain-core 0.3.x 不兼容，会导致 Agent 链路构建失败并静默降级
 ```
 
 ### 2. 配置环境变量
@@ -131,6 +133,9 @@ POST /api/upload   (multipart, 字段名 file)
 | POST | /api/kb/{kb_id}/departments | 设置库可访问部门（仅 admin） |
 | DELETE | /api/kb/{kb_id} | 删除知识库（仅 admin） |
 | POST | /api/eval/run | 运行 Eval 评估（仅 admin） |
+| GET | /api/review/queue | **v3.0**：待审核队列（按 AI 分数升序，最差在前） |
+| GET | /api/review/{doc_id}/diff | **v3.0**：入库前后对比（清洗前原文 vs 清洗后切片 + 损失率） |
+| POST | /api/review/{doc_id}/approve · reject · annotate | **v3.0**：人工通过（重切片入库）/ 退回（同步移出索引）/ chunk 级标注（过审分片检索加权） |
 
 ## 知识库权限隔离（角色 + 部门 + 用户覆盖）
 
@@ -172,7 +177,7 @@ python -m src.eval.run --kb hr --json
 | 模块 | 文件 | 说明 |
 |------|------|------|
 | 查询改写 | `src/retrieval/query_rewriter.py` | LLM/规则改写口语化问题，补充同义词，提升召回率 |
-| 上下文压缩 | `src/chains/context_compressor.py` | Token 超预算时对分片摘要/截断，降低 60% Token 消耗 |
+| 上下文压缩 | `src/chains/context_compressor.py` | Token 超预算时对分片摘要/截断，压降长上下文成本（设计目标约 60%，未做标准化实测） |
 | 热查询缓存 | `src/retrieval/cache.py` | LRU 缓存高频问题，TTL 1h，文档变更自动失效 |
 | DOCX 表格提取 | `src/ingestion/loader.py` | Word 表格转为 Markdown 入库，避免信息丢失 |
 | Token 监控 | `src/core/token_tracker.py` | 跟踪 LLM Token 消耗，超阈值告警，按模型统计 |
@@ -184,3 +189,5 @@ python -m src.eval.run --kb hr --json
 ```bash
 pytest tests/
 ```
+
+67 个用例全离线可跑：`tests/fakes.py` 以 FakeCollection / FakeVS 替代真实 ChromaDB 与 BGE 模型，无需 API Key、向量库或本地模型权重。

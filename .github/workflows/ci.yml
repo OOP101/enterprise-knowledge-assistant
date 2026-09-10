@@ -31,8 +31,6 @@ jobs:
 
       - name: Run tests
         # 测试离线可跑（tests/fakes.py 以 FakeCollection/FakeVS 替代真实 ChromaDB/BGE），
-        # 不依赖向量库与本地模型。已知 6 例因 langchain 全家桶版本矩阵迁移暂失败，
-        # 用 continue-on-error 保持 CI 不红，待版本对齐后移除。
-        continue-on-error: true
+        # 不依赖向量库与本地模型。依赖矩阵对齐后 67 个用例全部通过，不再需要 continue-on-error。
         run: |
           python -m pytest tests/ -q --no-header -p no:cacheprovider
