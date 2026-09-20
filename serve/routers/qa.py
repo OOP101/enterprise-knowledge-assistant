@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import json
-import time
-from typing import AsyncIterator
+from typing import AsyncIterator, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -196,26 +195,6 @@ def _emit(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def _iter_sse(answer: str, sources: list) -> AsyncIterator[str]:
-    """回退：将完整回答拆成逐字 token 的 SSE 流（同步 LLM 兜底）。"""
-    yield _emit({"type": "sources", "sources": sources})
-
-    tokens: list[str] = []
-    for token in answer.split():
-        if token and token[0].isascii() and token.isalnum():
-            tokens.append(token)
-        else:
-            tokens.extend(list(token))
-    if len(tokens) == 1 and answer and len(answer) > 1:
-        tokens = list(answer)
-
-    for t in tokens:
-        yield _emit({"type": "token", "content": t})
-        time.sleep(0.02)
-
-    yield _emit({"type": "done"})
-
-
 def _iter_real_stream(session_id: str, question: str, top_k: int, kb_id: str = "default") -> AsyncIterator[str]:
     """真 LLM 流式：检索 + 生成，逐 token 推送（2.0）。
 
@@ -371,8 +350,12 @@ def chat_stream(
     async def _wrapped():
         answer_text = ""
         sources_data: list = []
-        # _iter_real_stream 是同步生成器（内部用同步 llm.stream），用 for 而非 async for
-        for chunk in _iter_real_stream(sid, body.question, body.top_k, body.kb_id):
+        # _iter_real_stream 是同步生成器（内部 llm.stream / 检索 / 压缩均为同步 IO）。
+        # 必须经 iterate_in_threadpool 在线程池中迭代：直接 `for` 迭代会在
+        # LLM 流式期间阻塞事件循环，卡住并发服务中的所有其他请求。
+        from starlette.concurrency import iterate_in_threadpool
+
+        async for chunk in iterate_in_threadpool(_iter_real_stream(sid, body.question, body.top_k, body.kb_id)):
             try:
                 event = json.loads(chunk.strip().removeprefix("data: "))
                 if event.get("type") == "sources":

@@ -36,7 +36,8 @@ dashscope>=1.14.0                  # DashScope SDK（text-embedding-v3，1024 �
 
 # ---- 文档解析 ----
 pymupdf>=1.24                      # PDF 文本提取（含 fitz）
-python-docx>=1.1                   # Word 文档
+python-docx>=1.1                   # Word 文档（.docx）
+olefile>=0.47                      # Word 97-2003 二进制（.doc）OLE 复合文档读取
 # paddlepaddle>=2.6                # OCR 图片页（可选，体积大）
 # paddleocr>=2.7                   # OCR 图片页（可选）
 

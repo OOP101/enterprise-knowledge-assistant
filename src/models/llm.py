@@ -218,6 +218,7 @@ class LLMManager:
             "model": settings.llm_model,
             "provider": "",
         }
+        self._llm_cache: dict[tuple, Any] = {}  # 配置指纹 → ChatOpenAI 实例
         self._load()
 
     def _load(self) -> None:
@@ -268,10 +269,25 @@ class LLMManager:
         return self.get_config()
 
     def build(self, context_docs: list[dict] | None = None) -> Any:
-        """基于当前配置构建 LLM 实例。"""
+        """基于当前配置构建 LLM 实例。
+
+        真实 LLM 实例按配置指纹缓存复用：ChatOpenAI 内部持有独立 httpx 客户端，
+        每次重建会导致每次调用都重新 TLS 握手（百毫秒级开销且无连接复用）。
+        配置（模型/Key/BaseURL/温度等）变更时指纹失效、自动重建。
+        DemoLLM 携带 context_docs 状态，不缓存。
+        """
         cfg = self._config
         if not cfg.get("api_key"):
             return DemoLLM(context_docs=context_docs)
+
+        fingerprint = (
+            cfg.get("base_url"), cfg.get("api_key"), cfg.get("model"),
+            settings.llm_temperature, settings.llm_thinking, settings.llm_timeout,
+        )
+        cached = self._llm_cache.get(fingerprint)
+        if cached is not None:
+            return cached
+
         try:
             from langchain_openai import ChatOpenAI
 
@@ -279,13 +295,18 @@ class LLMManager:
             if settings.llm_thinking == "off":
                 # 思考模式关闭（MiMo 实测可省约一半首字延迟，且恢复 temperature 可用）
                 extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-            return ChatOpenAI(
+            # request_timeout：LLM 无响应时最多等待 llm_timeout 秒，防止网络故障挂死请求
+            llm = ChatOpenAI(
                 model=cfg["model"],
                 api_key=cfg["api_key"],
                 base_url=cfg["base_url"],
                 temperature=settings.llm_temperature,
+                request_timeout=settings.llm_timeout,
                 **extra_kwargs,
             )
+            self._llm_cache.clear()  # 仅保留当前指纹一个实例，避免旧配置实例滞留
+            self._llm_cache[fingerprint] = llm
+            return llm
         except ImportError:
             return DemoLLM(context_docs=context_docs)
 

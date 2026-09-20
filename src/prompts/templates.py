@@ -1,10 +1,13 @@
 """提示词模板。
 
 集中管理所有 Prompt，便于统一维护与调优。
+
+冷启动优化：ChatPromptTemplate 实例改为 PEP 562 模块级惰性属性——
+langchain_core.prompts 导入链实测耗时 ~5s（还连带 transformers/torch），
+而 QA 链路只用到字符串常量（QA_SYSTEM 等）。模板实例仅在首次被访问时
+才构建并缓存，`from templates import search_query_prompt` 等既有用法不变。
 """
 from __future__ import annotations
-
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # ---- QA Prompt：严格基于知识库回答（结论先行、精简） ----
 QA_SYSTEM = """你是一个严谨的企业知识助手。请遵循以下要求：
@@ -20,60 +23,6 @@ QA_SYSTEM = """你是一个严谨的企业知识助手。请遵循以下要求�
 【参考资料】
 {context}
 """
-
-qa_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", QA_SYSTEM),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{question}"),
-    ]
-)
-
-# ---- 对话式 QA Prompt（带历史） ----
-conversational_qa_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", QA_SYSTEM),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{question}"),
-    ]
-)
-
-# ---- 文档入库 / 摘要 Prompt ----
-summarize_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "请用 3-5 句话概括以下文档内容，突出主题、适用范围与关键结论：\n\n{text}",
-        ),
-        ("human", "请生成摘要。"),
-    ]
-)
-
-# ---- 对话压缩 / 指代消解 Prompt ----
-condense_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "根据对话历史，将用户的最后一句话改写为一个独立、完整、不含指代的问题，"
-            "以便用于检索。只输出改写后的问题，不要输出其他内容。",
-        ),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{question}"),
-    ]
-)
-
-# ---- 检索查询准备 Prompt（合并指代消解 + 查询改写，单次 LLM 调用降低首字延迟） ----
-search_query_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "你是检索查询优化器。结合对话历史，把用户的最后一句话改写为一个**独立、完整、不含指代**的检索查询，"
-            "并适当补充同义关键词（如制度用语）。只输出改写后的查询本身，一行以内，不要解释。",
-        ),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{question}"),
-    ]
-)
 
 # ---- 推荐追问生成 Prompt（回答完成后追加，驱动"猜你想问"卡片） ----
 FOLLOWUP_SYSTEM = (
@@ -95,20 +44,6 @@ AGENT_SYSTEM = """你是企业知识助手智能体。你拥有以下工具：
 - 若工具结果不足以回答，坦诚说明，不编造。
 """
 
-# ---- 意图分类 Prompt（2.0：LLM 辅助意图分类）----
-intent_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "你是意图分类器。判断用户问题属于哪一类，只输出一个单词（query / action / list）：\n"
-            "- query：询问知识、制度、流程步骤、SOP 内容\n"
-            "- action：表达办理/申请/提交/发起某个流程的行动意图\n"
-            "- list：询问有哪些可用流程/服务列表\n",
-        ),
-        ("human", "{question}"),
-    ]
-)
-
 # 未配置真实 LLM 时的兜底模板（供 DemoLLM 或离线逻辑参考）
 DEMO_QA_TEMPLATE = """【参考资料】
 {context}
@@ -117,3 +52,110 @@ DEMO_QA_TEMPLATE = """【参考资料】
 
 【演示模式回答】
 """
+
+
+# ---- PEP 562 模块级惰性属性：首次访问时才导入 langchain_core 并构建 ----
+def _build_qa_prompt():
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+    return ChatPromptTemplate.from_messages(
+        [
+            ("system", QA_SYSTEM),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{question}"),
+        ]
+    )
+
+
+def _build_conversational_qa_prompt():
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+    return ChatPromptTemplate.from_messages(
+        [
+            ("system", QA_SYSTEM),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{question}"),
+        ]
+    )
+
+
+def _build_summarize_prompt():
+    from langchain_core.prompts import ChatPromptTemplate
+
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "请用 3-5 句话概括以下文档内容，突出主题、适用范围与关键结论：\n\n{text}",
+            ),
+            ("human", "请生成摘要。"),
+        ]
+    )
+
+
+def _build_condense_prompt():
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "根据对话历史，将用户的最后一句话改写为一个独立、完整、不含指代的问题，"
+                "以便用于检索。只输出改写后的问题，不要输出其他内容。",
+            ),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{question}"),
+        ]
+    )
+
+
+def _build_search_query_prompt():
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "你是检索查询优化器。结合对话历史，把用户的最后一句话改写为一个**独立、完整、不含指代**的检索查询，"
+                "并适当补充同义关键词（如制度用语）。只输出改写后的查询本身，一行以内，不要解释。",
+            ),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{question}"),
+        ]
+    )
+
+
+def _build_intent_prompt():
+    from langchain_core.prompts import ChatPromptTemplate
+
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "你是意图分类器。判断用户问题属于哪一类，只输出一个单词（query / action / list）：\n"
+                "- query：询问知识、制度、流程步骤、SOP 内容\n"
+                "- action：表达办理/申请/提交/发起某个流程的行动意图\n"
+                "- list：询问有哪些可用流程/服务列表\n",
+            ),
+            ("human", "{question}"),
+        ]
+    )
+
+
+_LAZY_PROMPTS = {
+    "qa_prompt": _build_qa_prompt,
+    "conversational_qa_prompt": _build_conversational_qa_prompt,
+    "summarize_prompt": _build_summarize_prompt,
+    "condense_prompt": _build_condense_prompt,
+    "search_query_prompt": _build_search_query_prompt,
+    "intent_prompt": _build_intent_prompt,
+}
+
+
+def __getattr__(name: str):
+    factory = _LAZY_PROMPTS.get(name)
+    if factory is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = factory()
+    globals()[name] = value  # 构建后缓存为模块属性
+    return value

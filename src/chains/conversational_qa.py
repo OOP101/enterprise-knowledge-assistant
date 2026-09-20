@@ -2,7 +2,7 @@
 
 结合短期会话记忆 + 长期向量记忆 + 真指代消解：
 1. 先 `recall` 长期记忆注入上下文
-2. 用 LLM `condense_prompt` 做真指代消解（而非 1.0 的 return question）
+2. `prepare_query` 做指代消解 + 查询改写（合并为单次 LLM 调用）
 3. 检索 + 生成 + 记录短期/长期记忆
 """
 from __future__ import annotations
@@ -11,34 +11,12 @@ import logging
 from typing import Any
 
 from config.settings import settings
-from src.chains.retrieval_qa import _format_docs
 from src.core import get_container
 from src.models.llm import get_llm
-from src.prompts.templates import QA_SYSTEM, condense_prompt
+from src.prompts.templates import QA_SYSTEM
 from src.retrieval.retriever import search_with_context
 
 logger = logging.getLogger(__name__)
-
-
-def _condense_question(question: str, history: list, llm: Any) -> str:
-    """真指代消解：调用 LLM 将带指代的最后一句改写为独立问题。
-
-    若历史为空或未启用，则返回原问题。
-    保留兼容旧调用；推荐使用 prepare_query（合并消解+改写，单次 LLM 调用）。
-    """
-    if not history or not settings.condense_history:
-        return question
-    try:
-        prompt = condense_prompt.invoke(
-            {"chat_history": history, "question": question}
-        )
-        resp = llm.invoke(prompt)
-        text = resp.content if hasattr(resp, "content") else str(resp)
-        text = text.strip()
-        return text if text else question
-    except Exception as e:  # noqa: BLE001
-        logger.debug("指代消解失败，回退原问题：%s", e)
-        return question
 
 
 def prepare_query(question: str, history: list, llm: Any) -> str:

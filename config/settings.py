@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # 思考模式：off=对支持的服务商(如 MiMo)传 thinking disabled，显著降低首字延迟
     # on=保持思考（质量优先，慢）；auto=不干预由服务商默认行为决定
     llm_thinking: str = "off"
+    # LLM 请求超时（秒）：网络故障/服务端无响应时防止请求挂死
+    llm_timeout: float = 60.0
 
     # ---- Embedding ----
     # Provider: dashscope(原生) | openai(OpenAI兼容) | local(sentence-transformers) | demo(哈希兜底)

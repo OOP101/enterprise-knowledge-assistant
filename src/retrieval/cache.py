@@ -34,13 +34,14 @@ class QueryCache:
 
     def __init__(
         self,
-        max_size: int = DEFAULT_CACHE_SIZE,
-        ttl: int = DEFAULT_TTL_SECONDS,
+        max_size: int | None = None,
+        ttl: int | None = None,
         cache_file: Path | None = None,
     ) -> None:
         self._cache: OrderedDict[str, dict] = OrderedDict()
-        self._max_size = max_size
-        self._ttl = ttl
+        # 未显式指定时读取全局配置（cache_size / cache_ttl），保持 .env 可调
+        self._max_size = max_size if max_size is not None else settings.cache_size
+        self._ttl = ttl if ttl is not None else settings.cache_ttl
         self._lock = Lock()
         self._hits = 0
         self._misses = 0
@@ -100,37 +101,31 @@ class QueryCache:
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
     def get(self, query: str, kb_id: str = "default") -> dict | None:
-        """查询缓存。命中返回 {answer, sources}，未命中返回 None。"""
+        """查询缓存。命中返回 {answer, sources}，未命中返回 None。
+
+        纯内存操作：get 位于请求热路径，不再每次读写盘（历史上每次 get 都
+        全量序列化落盘，同步磁盘 IO 反而抵消了缓存收益）。持久化仅在写路径
+        （put / invalidate / clear）时执行，读计数差异容忍进程重启后丢失。
+        """
         if not settings.cache_enabled:
             return None
         key = self._make_key(query, kb_id)
         with self._lock:
             entry = self._cache.get(key)
-            if entry is None:
+            if entry is None or time.time() - entry["timestamp"] > self._ttl:
+                if entry is not None:
+                    del self._cache[key]
                 self._misses += 1
-                snapshot = self._snapshot()
-                self._save(snapshot)
-                return None
-
-            # TTL 过期检查
-            if time.time() - entry["timestamp"] > self._ttl:
-                del self._cache[key]
-                self._misses += 1
-                snapshot = self._snapshot()
-                self._save(snapshot)
                 return None
 
             # LRU: 移到末尾（最近使用）
             self._cache.move_to_end(key)
             self._hits += 1
             logger.debug("缓存命中：%s (kb=%s)", query[:30], kb_id)
-            snapshot = self._snapshot()
-            result = {
+            return {
                 "answer": entry["answer"],
                 "sources": entry["sources"],
             }
-        self._save(snapshot)
-        return result
 
     def put(
         self,

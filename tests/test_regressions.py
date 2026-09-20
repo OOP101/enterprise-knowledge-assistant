@@ -203,3 +203,139 @@ def test_bm25_corpus_epoch_invalidates(monkeypatch):
     assert hs._corpus_epoch["kb_inv"] == e0 + 1
     i2 = hs._get_full_corpus_bm25("kb_inv", e0 + 1)
     assert i1 is not i2, "epoch 变化后应重建 BM25 索引"
+
+
+# ---- 8. 批量入库：不支持的格式必须显式上报，不得静默丢弃 ----
+def test_ingest_reports_unsupported_formats(tmp_path, monkeypatch):
+    from config.settings import get_settings
+    from serve.routers.knowledge import ingest_directory
+    from src.ingestion.loader import SUPPORTED_EXTENSIONS
+
+    # 从常量推导"当前不支持的格式"，避免每新增一种格式就要改这条用例
+    junk_exts = [e for e in (".wps", ".xls", ".csv", ".rtf") if e not in SUPPORTED_EXTENSIONS]
+    assert len(junk_exts) >= 2, "需至少两种未支持格式来覆盖该场景"
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    names = [f"junk{i}{ext}" for i, ext in enumerate(junk_exts[:2])]
+    for n in names:
+        (docs_dir / n).write_bytes(b"not a supported document")
+    # 支持格式但内容无效 → 解析失败，也应上报而非静默跳过
+    (docs_dir / "c.pdf").write_bytes(b"not a real pdf")
+
+    monkeypatch.setattr(get_settings(), "docs_dir", str(docs_dir))
+
+    r = ingest_directory(kb_id="default", _=None)
+
+    assert sorted(r["unsupported"]) == sorted(names)
+    assert r["skipped_empty"] == ["c.pdf"]
+    assert r["ingested"] == 0
+    assert r["files"] == []
+    assert "格式不支持" in r["message"]
+    assert "解析后无内容" in r["message"]
+
+
+def test_ingest_clean_dir_reports_empty_buckets(tmp_path, monkeypatch):
+    from config.settings import get_settings
+    from serve.routers.knowledge import ingest_directory
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    monkeypatch.setattr(get_settings(), "docs_dir", str(docs_dir))
+
+    r = ingest_directory(kb_id="default", _=None)
+
+    assert r["unsupported"] == []
+    assert r["skipped_empty"] == []
+    assert "⚠" not in r["message"]
+
+
+# ---- 9. .doc（Word 97-2003 二进制）解析：piece table + 控制符清洗 ----
+def test_doc_registered_as_supported():
+    from src.ingestion.loader import _LOADERS, SUPPORTED_EXTENSIONS
+
+    assert ".doc" in SUPPORTED_EXTENSIONS
+    assert ".doc" in _LOADERS
+
+
+def test_normalize_doc_text_strips_control_chars():
+    from src.ingestion.loader import _normalize_doc_text
+
+    raw = "标题\r第一章\x0b第一节\x0c\x00正文\xa0结束\r\r\r"
+    assert _normalize_doc_text(raw) == "标题\n第一章\n第一节\n正文 结束"
+
+
+def test_doc_text_runs_non_complex_single_block():
+    from src.ingestion.loader import _doc_text_runs
+
+    fib = bytearray(64)  # flags 全 0 → fComplex=0
+    fib[0x18:0x1C] = (100).to_bytes(4, "little")  # fcMin
+    fib[0x1C:0x20] = (300).to_bytes(4, "little")  # fcMac
+
+    assert _doc_text_runs(bytes(fib), b"") == [(100, 200, True)]
+
+
+def test_load_doc_on_non_ole_returns_empty(tmp_path):
+    """非 OLE 文件（如被改名的文本）应安全返回空，而不是抛异常中断整批入库。"""
+    from src.ingestion.loader import _load_doc
+
+    f = tmp_path / "fake.doc"
+    f.write_bytes(b"this is not an OLE compound document at all")
+
+    assert _load_doc(f) == []
+
+
+# ---- 10. .xlsx（OOXML）：标准库解析，共享串 / 内联串 / 表名 ----
+def _make_xlsx(path) -> None:
+    """合成一个最小 .xlsx（本质是 zip）用于离线测试。"""
+    import zipfile
+
+    ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    pkg_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    files = {
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{ns}" xmlns:r="{rel_ns}">'
+            '<sheets><sheet name="职责表" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            f'<Relationships xmlns="{pkg_ns}">'
+            '<Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/sharedStrings.xml": (
+            f'<sst xmlns="{ns}"><si><t>职责</t></si><si><t>说明</t></si></sst>'
+        ),
+        "xl/worksheets/sheet1.xml": (
+            f'<worksheet xmlns="{ns}"><sheetData>'
+            '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>'
+            '<row r="2"><c r="A2"><v>42</v></c>'
+            '<c r="B2" t="inlineStr"><is><t>内联</t></is></c></row>'
+            "</sheetData></worksheet>"
+        ),
+    }
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, body in files.items():
+            zf.writestr(name, body)
+
+
+def test_xlsx_extracts_shared_and_inline_strings(tmp_path):
+    from src.ingestion.loader import _load_xlsx
+
+    f = tmp_path / "t.xlsx"
+    _make_xlsx(f)
+
+    docs = _load_xlsx(f)
+
+    assert len(docs) == 1
+    text = docs[0].page_content
+    assert "[职责表]" in text  # 表名取自 workbook.xml
+    assert "| 职责 | 说明 |" in text  # 共享字符串
+    assert "| 42 | 内联 |" in text  # 字面值 + 内联字符串
+
+
+def test_xlsx_registered_as_supported():
+    from src.ingestion.loader import _LOADERS, SUPPORTED_EXTENSIONS
+
+    assert ".xlsx" in SUPPORTED_EXTENSIONS
+    assert ".xlsx" in _LOADERS

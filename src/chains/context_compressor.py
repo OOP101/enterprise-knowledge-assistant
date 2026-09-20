@@ -120,20 +120,26 @@ def compress_context(
     compressed: list[Document] = []
     if settings.llm_ready:
         try:
-            for doc in docs:
-                compressed.append(_llm_compress_chunk(doc, query, llm))
+            # 并行摘要：逐片串行调用 LLM 时 N 片 = N 次串行网络往返（可达 10~30s），
+            # 改为线程池并发（LLM 实例的 httpx 客户端可并发复用连接）
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=min(4, len(docs))) as pool:
+                futures = [pool.submit(_llm_compress_chunk, doc, query, llm) for doc in docs]
+                compressed = [f.result() for f in futures]
         except Exception as e:
             logger.debug("LLM 摘要压缩失败，回退规则截断：%s", e)
             compressed = [_rule_compress_chunk(doc) for doc in docs]
     else:
         compressed = [_rule_compress_chunk(doc) for doc in docs]
 
-    # 二次检查：如果压缩后仍超预算，按最大字符数截断
-    total_chars = sum(len(d.page_content) for d in compressed)
-    if total_chars > token_budget:
-        ratio = token_budget / total_chars
+    # 二次检查：如果压缩后仍超预算，按比例截断（统一用 token 估算比较，
+    # 原实现拿字符数与 token 预算比较，单位不一致导致基本不会触发）
+    final_tokens = _estimate_tokens("\n\n".join(d.page_content for d in compressed))
+    if final_tokens > token_budget:
+        ratio = token_budget / final_tokens
         for doc in compressed:
-            max_len = int(MAX_CHUNK_CHARS * ratio)
+            max_len = max(50, int(len(doc.page_content) * ratio))
             if len(doc.page_content) > max_len:
                 doc.page_content = doc.page_content[:max_len] + "..."
 

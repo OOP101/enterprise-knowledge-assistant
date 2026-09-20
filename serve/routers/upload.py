@@ -17,15 +17,12 @@ from config.settings import settings
 from src.auth.deps import get_current_user
 from src.auth.rbac import can_access_kb
 from src.ingestion.cleaner import clean_documents
-from src.ingestion.loader import load_document
-from src.ingestion.splitter import split_documents
+from src.ingestion.loader import SUPPORTED_EXTENSIONS, load_document
 from src.review.pipeline import process_and_ingest
 from src.utils.helpers import file_hash, safe_filename
 
 router = APIRouter(prefix="/api/upload", tags=["文档上传"])
 
-# 允许的扩展名
-ALLOWED_EXT = {".pdf", ".md", ".markdown", ".txt", ".docx"}
 # 上传大小上限（Nginx 层 client_max_body_size 100m，应用层再兜底）
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -38,8 +35,11 @@ async def upload_document(
 ) -> dict:
     filename = safe_filename(file.filename or "unnamed")
     ext = Path(filename).suffix.lower()
-    if ext not in ALLOWED_EXT:
-        raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {ext}，仅支持 {sorted(SUPPORTED_EXTENSIONS)}",
+        )
     if not can_access_kb(user, kb_id):
         raise HTTPException(status_code=403, detail=f"无权上传到知识库：{kb_id}")
 
@@ -72,6 +72,9 @@ async def upload_document(
         docs = clean_documents(docs)
         if not docs:
             raise HTTPException(status_code=400, detail="文档清洗后为空，可能为纯图片或空白文档")
+
+        # 冷启动优化：splitter（连带 langchain_text_splitters/torch）延迟到首次入库才导入
+        from src.ingestion.splitter import split_documents
 
         chunks = split_documents(docs)
         if not chunks:

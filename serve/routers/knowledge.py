@@ -1,6 +1,7 @@
 """知识库管理接口：入库目录文档、删除、统计。"""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,15 +16,13 @@ from src.ingestion.embedder import (
     list_documents,
     remove_document,
 )
-from src.ingestion.loader import load_document
-from src.ingestion.splitter import split_documents
+from src.ingestion.loader import SUPPORTED_EXTENSIONS, load_document
 from src.review.pipeline import process_and_ingest
 from src.utils.helpers import file_hash
 
-router = APIRouter(prefix="/api/knowledge", tags=["知识库管理"])
+logger = logging.getLogger(__name__)
 
-# 支持的扩展名（用于批量入库扫描）
-_SUPPORTED_EXT = {".pdf", ".md", ".markdown", ".txt", ".docx"}
+router = APIRouter(prefix="/api/knowledge", tags=["知识库管理"])
 
 
 class DeleteRequest(BaseModel):
@@ -38,31 +37,47 @@ def ingest_directory(
     """扫描 docs_dir 下所有支持的文件，按文件逐个入库到指定知识库。
 
     重复内容自动跳过（基于文件 MD5），返回 ingested/skipped 统计。
+    格式不支持、解析/清洗/切片后无内容的文件会显式列出并告警，不做静默丢弃。
     """
     docs_dir = Path(settings.docs_dir)
     if not docs_dir.is_dir():
-        return {"ok": True, "ingested": 0, "skipped": 0, "kb_id": kb_id, "message": "docs 目录不存在"}
+        return {
+            "ok": True,
+            "kb_id": kb_id,
+            "ingested": 0,
+            "skipped": 0,
+            "pending_review": 0,
+            "files": [],
+            "unsupported": [],
+            "skipped_empty": [],
+            "message": "docs 目录不存在",
+        }
 
     total_ingested = 0
     total_skipped = 0
     total_pending = 0
-    files_done = []
+    files_done: list[str] = []
+    unsupported: list[str] = []
+    skipped_empty: list[str] = []
 
     for path in sorted(docs_dir.glob("**/*")):
-        if not path.is_file() or path.suffix.lower() not in _SUPPORTED_EXT:
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            unsupported.append(path.name)
             continue
         try:
             content = path.read_bytes()
             content_hash = file_hash(content)
             docs = load_document(path, use_ocr=True)
-            if not docs:
-                continue
             pre_clean_text = "\n\n".join(d.page_content for d in docs if d.page_content)
-            docs = clean_documents(docs)
-            if not docs:
-                continue
-            chunks = split_documents(docs)
+            docs = clean_documents(docs) if docs else []
+            # 冷启动优化：splitter（连带 langchain_text_splitters/torch）延迟到首次入库才导入
+            from src.ingestion.splitter import split_documents
+
+            chunks = split_documents(docs) if docs else []
             if not chunks:
+                skipped_empty.append(path.name)
                 continue
             # v3.0：批量入库同样走审核流（低分挂起，过审才生效）
             r = process_and_ingest(
@@ -80,15 +95,34 @@ def ingest_directory(
             else:
                 total_ingested += len(chunks)
                 files_done.append(path.name)
-        except Exception as e:  # noqa: BLE001
-            import logging
-            logging.getLogger(__name__).exception("入库失败：%s", path)
+        except Exception:  # noqa: BLE001
+            logger.exception("入库失败：%s", path)
+            skipped_empty.append(path.name)
             continue
+
+    if unsupported:
+        logger.warning(
+            "入库扫描到 %d 个不支持的格式（已跳过，未入库）：%s。支持格式：%s",
+            len(unsupported),
+            "、".join(unsupported),
+            sorted(SUPPORTED_EXTENSIONS),
+        )
+    if skipped_empty:
+        logger.warning(
+            "入库扫描到 %d 个文件解析后无可用内容（已跳过，未入库）：%s",
+            len(skipped_empty),
+            "、".join(skipped_empty),
+        )
 
     msg = (
         f"入库到知识库「{kb_id}」完成：新入库 {total_ingested} 个片段（{len(files_done)} 文件），"
         f"跳过 {total_skipped} 个重复，待人工审核 {total_pending} 个"
     )
+    if unsupported:
+        msg += f"；⚠ {len(unsupported)} 个文件格式不支持未入库（{sorted(SUPPORTED_EXTENSIONS)}）"
+    if skipped_empty:
+        msg += f"；⚠ {len(skipped_empty)} 个文件解析后无内容未入库"
+
     return {
         "ok": True,
         "kb_id": kb_id,
@@ -96,6 +130,8 @@ def ingest_directory(
         "skipped": total_skipped,
         "pending_review": total_pending,
         "files": files_done,
+        "unsupported": unsupported,
+        "skipped_empty": skipped_empty,
         "message": msg,
     }
 

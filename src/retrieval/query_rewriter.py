@@ -82,11 +82,14 @@ def _llm_rewrite(query: str, llm: Any) -> str:
     return text if text else query
 
 
-def rewrite_query(query: str, llm: Any | None = None) -> str:
+def rewrite_query(query: str, llm: Any | None = None, use_llm: bool = True) -> str:
     """查询改写入口。
 
     优先使用 LLM 改写（更智能），未配置时回退规则改写（离线可用）。
     改写后的问题用于向量检索与 BM25 检索，提升召回率。
+
+    use_llm=False 时只用规则改写（零网络开销）——单轮问答链路问题通常
+    较完整，规则扩展同义词已够用，省一次 LLM 往返（思考模型下 2~7s）。
     """
     if not query or not query.strip():
         return query
@@ -96,15 +99,16 @@ def rewrite_query(query: str, llm: Any | None = None) -> str:
 
     query = query.strip()
 
-    if llm is None:
-        llm = get_llm()
+    if use_llm:
+        if llm is None:
+            llm = get_llm()
 
-    if settings.llm_ready:
-        try:
-            rewritten = _llm_rewrite(query, llm)
-            logger.debug("LLM 查询改写：%s → %s", query, rewritten)
-            return rewritten
-        except Exception as e:
-            logger.debug("LLM 查询改写失败，回退规则：%s", e)
+        if settings.llm_ready:
+            try:
+                rewritten = _llm_rewrite(query, llm)
+                logger.debug("LLM 查询改写：%s → %s", query, rewritten)
+                return rewritten
+            except Exception as e:
+                logger.debug("LLM 查询改写失败，回退规则：%s", e)
 
     return _rule_rewrite(query)

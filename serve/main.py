@@ -44,8 +44,12 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001
             pass
 
-    # 维度校验：检查 Embedding 模型与已有向量库维度是否匹配
-    _check_embedding_dimension()
+    # 维度校验：检查 Embedding 模型与已有向量库维度是否匹配。
+    # 冷启动优化：该步骤会触发 chromadb 导入（数秒），放后台线程执行，
+    # 不阻塞服务就绪；异常仅记日志，不影响可用性。
+    import threading
+
+    threading.Thread(target=_check_embedding_dimension, daemon=True).start()
     # 安全自检：默认密钥/默认管理员密码检测
     _check_security_settings()
     # 认证开启时，预置管理员账号（不存在才创建）
@@ -141,7 +145,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="企业知识助手",
         description="基于 RAG 的企业知识问答系统：语义检索 + 多轮对话记忆 + 工具调用闭环",
-        version="2.3.0",
+        version="3.1.2",
         lifespan=lifespan,
     )
 
@@ -184,11 +188,19 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", tags=["系统"])
     def health() -> dict:
+        # mode 读取运行时模型配置（config/model_config.json 可在线切换），
+        # 而非仅看 .env 的 settings.llm_api_key，避免健康检查状态与实际不符
+        from src.models.llm import get_llm_config
+
+        try:
+            runtime_ready = bool(get_llm_config().get("ready"))
+        except Exception:  # noqa: BLE001
+            runtime_ready = settings.llm_ready
         return {
             "service": "企业知识助手",
-            "version": "2.3.1",
+            "version": "3.1.2",
             "docs": "/docs",
-            "mode": "production" if settings.llm_ready else "demo",
+            "mode": "production" if runtime_ready else "demo",
         }
 
     # 挂载前端静态资源（开发期禁用缓存，确保前端改动即时生效）
