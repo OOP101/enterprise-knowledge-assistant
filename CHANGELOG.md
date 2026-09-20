@@ -8,6 +8,109 @@
 
 ---
 
+## v4.0.0 — 2026-09-18
+
+### UI「科技蓝」改版（P1 已合入）+ 模型通道迁移
+
+#### UI（后端零改动）
+
+- 对标 FastGPT / RAGFlow / MaxKB / Dify 提炼设计模式，产出[需求文档](docs/UI改版需求文档.md)（P0~P3 分期）与静态视觉稿（`docs/ui-mockup-v4.html`）；
+- 设计 token 层重写：默认浅色「科技蓝」（主色 #2F6BFF），深色改挂 `[data-theme="dark"]`（蓝灰调），老用户深色偏好保留；
+- 侧边栏新增「入库审核」入口（admin）+ 待审徽章接 `/api/review/queue`；控制台新增问候条与「开始提问」快捷入口；
+- 修复 3 处改版残留绿（回答卡模型徽章 / 流程确认卡徽章 / 推荐追问 chips 悬停底色）；前端资源版本 `?v=6.1`。
+
+#### 模型通道：腾讯 TokenHub → 阿里云百炼
+
+- 主模型 `deepseek-v3`（OpenAI 兼容端点，temperature=0 实测 1.5s/次），配置于 `.env` 与 `config/model_config.json`（运行时热切换，均在 gitignore）；
+- 环境修复：langchain-openai 1.x 漂移（import core 0.3.x 不存在的 `ContextOverflowError`）导致 ChatOpenAI 构造失败并**静默回退 DemoLLM**；requirements 锁 `>=0.2,<0.4`（0.3.35）。诊断口诀：`type(get_llm()).__name__` 不是 ChatOpenAI 即已降级。
+
+**测试**：75 个用例全离线通过。
+
+---
+
+## v3.1.2 — 2026-09-18
+
+### 冷启动优化：服务就绪时间从 ~17s 降至 2.4s（实测）
+
+#### 根因（python -X importtime 实测：import serve.main 累计 18.1s）
+
+- `langchain_text_splitters` 的包 `__init__` 无条件连带导入 `sentence_transformers` + `transformers` + `torch`，其 `base.py` 顶层还有 `try: import transformers`——即装了就导入（两项合计 ~17s，占启动 94%）。切片器仅在文档入库时使用，问答链路完全不需要 torch，却每次启动都白扛一遍；
+- lifespan 里的 Embedding 维度校验触发 `chromadb` 导入（数秒），阻塞服务就绪。
+
+#### 修复
+
+- `src/ingestion/splitter.py`：`langchain_text_splitters` 改为 `get_splitter()` 函数内延迟导入（连带 torch 全家移出启动路径）；
+- `serve/routers/upload.py` / `knowledge.py`：顶层 `from src.ingestion.splitter import split_documents` 移入使用函数内（首次入库时才付一次导入成本）；
+- `src/prompts/templates.py`：6 个模块级 `ChatPromptTemplate` 实例改为 PEP 562 模块级惰性属性——`langchain_core.prompts` 导入链实测 ~5s（还连带 transformers/torch），而问答链路只用字符串常量；模板首次访问时构建并缓存，既有 `from templates import search_query_prompt` 等用法零改动；
+- `serve/main.py`：Embedding 维度校验挪至后台 daemon 线程，不再阻塞服务就绪（异常仅记日志）；代价是启动后数秒内首个查询可能顺带完成 chromadb 导入。
+
+#### 实测
+
+- `import serve.main` 累计导入 18.1s → **1.4s**；临时端口冷启动到 `/api/health` 200 → **2.4s**。
+
+## v3.1.1 — 2026-09-18
+
+### 性能优化批次：请求热路径去阻塞 + LLM 连接复用
+
+#### 1. 查询缓存 get() 去掉同步落盘（🔴 热路径）
+
+- `src/retrieval/cache.py`：原实现每次 `get()`（命中/未命中/过期）都把整个缓存 JSON 全量序列化写盘——读路径做同步磁盘 IO，恰恰抵消缓存收益；
+- 改为**纯内存操作**，持久化仅在写路径（put / invalidate_kb / clear）执行；命中/未命中计数容忍重启后丢失；
+- 顺带接入 `settings.cache_size` / `settings.cache_ttl`（原为死配置，`QueryCache` 一直用硬编码默认值）。
+
+#### 2. 流式接口不再阻塞事件循环（🔴 并发瓶颈）
+
+- `serve/routers/qa.py::chat_stream`：原在 async 函数里 `for` 迭代同步生成器——LLM 流式期间（检索/压缩/逐 token 均为同步 IO）整个事件循环被卡住，并发用户的请求全部排队；
+- 改用 `starlette.concurrency.iterate_in_threadpool` 在线程池中迭代，事件循环全程不被阻塞；
+- 删除无调用方的死代码 `_iter_sse`（含阻塞式 `time.sleep`），补上 `_generate_followups` 缺失的 `Any` 导入。
+
+#### 3. LLM 实例按配置指纹缓存 + 请求超时
+
+- `src/models/llm.py`：原 `get_llm()` 每次调用都新建 `ChatOpenAI`——每个实例持有独立 httpx 客户端，每次 LLM 调用都重新 TLS 握手（百毫秒级开销）且无连接复用；
+- 改为按配置指纹（base_url/key/model/温度/思考模式/超时）缓存实例，配置在线切换时指纹失效自动重建；
+- 新增 `LLM_TIMEOUT` 配置（默认 60s）→ `request_timeout`：网络故障/服务端无响应时不再挂死请求。
+
+#### 4. 单轮问答省一次 LLM 改写往返
+
+- `src/chains/retrieval_qa.py::ask()`：原每次固定调 `rewrite_query`（LLM 改写，思考模型下 2~7s）；`rewrite_query` 新增 `use_llm` 参数，单轮链路改走规则改写（口语归一 + 同义词扩展，零网络开销），与流式链路"无历史零 LLM 开销"（v2.5）对齐；
+- `src/chains/context_compressor.py`：LLM 摘要压缩由逐片串行（N 片 = N 次串行网络往返）改为线程池并行（≤4 并发）；修正二次截断"字符数 vs Token 预算"单位不一致导致永不触发的问题（统一按 token 估算比较）。
+
+#### 5. 清理与一致性
+
+- 删除 1.0 遗留死代码：`build_retrieval_qa` / `get_retrieval_qa` / `RunnableLambdaAdapter` / `ComposedRunnable`（`retrieval_qa.py`）、`_condense_question`（`conversational_qa.py`，v2.4 起被 `prepare_query` 取代）；
+- `serve/main.py`：版本号 2.3.0/2.3.1 → 3.1.1（与实际版本脱节）；`/api/health` 的 `mode` 改读运行时模型配置（`config/model_config.json` 在线切换后健康检查状态不再与实际不符）。
+
+**测试**：75 个用例全离线通过，无行为回归。
+
+---
+
+## v3.1.0 — 2026-09-15
+
+### 新增：Word 97-2003（.doc）与 Excel 2007+（.xlsx）文档解析
+
+- **背景**：存量语料 234 份里，31 份 `.doc` 与 3 份 `.xlsx` 此前不在 `SUPPORTED_EXTENSIONS` 内，入库时被静默跳过——从未进入知识库；
+- **本机探测**：Word 已安装（`Office16/WINWORD.EXE`）但无 pywin32；LibreOffice / WPS 均未安装 —— 故放弃 COM 与 soffice 通道；
+- **实现**（`src/ingestion/loader.py::_load_doc`）：走 **零依赖** 路线——`olefile` 读取 OLE 复合文档的 `WordDocument` 流，解析 FIB **piece table**（CLX → PlcPcd），按片解码（8 位 cp1252 / 16 位 UTF-16LE）。相比"整体猜编码"既更可靠，也天然只取正文、避开 FIB 头部等二进制结构；
+- **实测**：31 份全部提取成功、30 份首行即真实标题，语料内常见词命中 31/31；`.doc` 注册进 `SUPPORTED_EXTENSIONS` 后，批量入库与上传接口自动放行（得益于 v3.0.1 的常量收敛，仅改一处）；
+- **实现**（`src/ingestion/loader.py::_load_xlsx`）：`.xlsx` 本质是 zip + XML，用**标准库**（`zipfile` + `xml.etree`）解析，同样零外部依赖（无需 openpyxl）。读取 `sharedStrings.xml` 共享串表，逐工作表按行输出 `| 单元格 | 单元格 |`，并解析 `workbook.xml` + rels 还原**工作表名**便于检索定位（退化为文件名也不影响正文）；
+- **实测**：3 份 `.xlsx` 全部提取成功。「营销部的组织架构与责权」5039 字（职责 1–11 完整保留）；另两份（到访登记表 / 应聘登记表）实为**空白表单模板**，仅 171 / 594 字，无检索价值——正好会被审核打分器按「长度合理区」判低分自动挂起，无需特判；
+- **依赖**：`olefile` 由传递依赖转为显式声明，未引入新的安装负担；`.xlsx` 走标准库，零新增；
+- **已知局限（未掩盖）**：属纯文本粗提取，不还原表格与排版；1 份 WPS 生成文件（`126企业文化建设管理办法.doc`）正文内混有二进制噪点段，根因在文件流本身而非解析缺陷。**未加启发式过滤器**——实测该类过滤器会误删真实表格（如 169 岗位评估表、196 招聘表单），改由审核打分器按文本密度/结构完整度自动低分挂起；
+- **测试**：新增 6 个用例（.doc：注册表、控制符清洗、piece table 非复杂片解析、非 OLE 文件安全返回空；.xlsx：合成样本验证共享串/内联串/表名、注册表），**累计 75 测试全离线通过**。
+
+---
+
+## v3.0.1 — 2026-09-15
+
+### 修复：批量入库静默丢弃不支持格式的文档
+
+- **问题**：`POST /api/knowledge/ingest` 扫描目录时，对非支持格式（`.doc` / `.xls` / `.xlsx` / `.wps`）以及解析后无内容的文件直接 `continue`——既不告警也不计入返回体。真实语料 234 份中有 36 份（31 个 `.doc` + 3 `.xlsx` + 1 `.xls` + 1 `.wps`）属此类，操作员看到「入库完成」却无从察觉这批文件从未进库；
+- **修复**（`serve/routers/knowledge.py`）：返回体新增 `unsupported` / `skipped_empty` 两个字段列出被跳过的文件名，`message` 追加 ⚠ 提示，并对两者分别打 WARNING 日志；解析异常的文件同样归入 `skipped_empty` 而非静默吞掉；
+- **常量收敛**：扩展名清单此前在 `loader.py` / `knowledge.py` / `upload.py` 三处各写一份，存在漂移风险（新增格式支持时易漏改）。统一为 `src/ingestion/loader.SUPPORTED_EXTENSIONS` 单一来源；上传接口的 400 报错同步列出支持格式；
+- **测试**：`tests/test_regressions.py` 新增 2 个用例锁定该行为（混合目录必须显式上报、干净目录不得出现 ⚠ 提示），**累计 69 测试全离线通过**。
+
+---
+
 ## v3.0.0 — 2026-09-05
 
 ### 入库审核流（Phase 1 后端）：AI 预筛 + 人工把关 + 双层存储

@@ -34,9 +34,11 @@ build/
 
 # ==== 求职/简历内部材料（严禁公开）====
 docs_企业知识助手/
+docs/简历面试/
 .idea/
 .codebuddy/
+.claude/
 .workbuddy/
 
 # ==== 本地模型权重（95MB BGE，不入库） ====
-models/
+/models/

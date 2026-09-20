@@ -31,6 +31,7 @@
         feedbackResolve: "/api/qa/feedback/", sysStats: "/api/qa/stats",
         sessions: "/api/chat/sessions", sessionMessages: "/api/chat/sessions/",
         sessionFollowups: "/api/chat/sessions/", historySearch: "/api/chat/search",
+        reviewQueue: "/api/review/queue",
     };
 
     /* ========== 工具函数 ========== */
@@ -64,6 +65,7 @@
         if (typeof loadStats === "function") loadStats();
         if (typeof loadDashboard === "function") loadDashboard();
         if (typeof loadQuickModel === "function") loadQuickModel();
+        if (typeof loadReviewBadge === "function") loadReviewBadge();
     }
 
     /* 轻提示（自动消失） */
@@ -286,7 +288,7 @@
         });
     }
     // 每个视图顶部的折叠按钮都联动同一个 sidebar
-    ["sidebarToggle", "sidebarToggle2", "sidebarToggle3", "sidebarToggle4", "sidebarToggle5", "sidebarToggle6"]
+    ["sidebarToggle", "sidebarToggle2", "sidebarToggle3", "sidebarToggle4", "sidebarToggle5", "sidebarToggle6", "sidebarToggle7"]
         .forEach(function (id) { const b = $(id); if (b) bindCollapse(b); });
 
     const menuItems = document.querySelectorAll(".nav-item[data-view]");
@@ -1531,8 +1533,8 @@
     }
     function initTheme() {
         const saved = localStorage.getItem("theme");
-        // 默认深色；有保存则用保存值
-        const theme = saved === "light" ? "light" : "dark";
+        // v6.0 默认浅色科技蓝；有保存值则用保存值（旧用户存过 dark 会保持深色）
+        const theme = saved === "dark" ? "dark" : "light";
         applyTheme(theme);
     }
     function toggleTheme() {
@@ -1544,11 +1546,45 @@
         btn.addEventListener("click", toggleTheme);
     });
 
+    /* ========== v6.0 UI 改版：欢迎横幅 / 审核徽章 ========== */
+    function bindHero() {
+        const heroBtn = $("heroAskBtn");
+        if (heroBtn) heroBtn.addEventListener("click", function () { switchPage("chat"); });
+        const greeting = $("heroGreeting");
+        if (greeting) {
+            const h = new Date().getHours();
+            greeting.textContent = h < 6 ? "夜深了，需要查点什么？"
+                : h < 12 ? "上午好，需要查点什么？"
+                : h < 14 ? "中午好，需要查点什么？"
+                : h < 18 ? "下午好，需要查点什么？"
+                : "晚上好，需要查点什么？";
+        }
+    }
+    /* 审核队列待办徽章：仅 admin 可见，接口异常时静默隐藏 */
+    function loadReviewBadge() {
+        const badge = $("navReviewBadge");
+        if (!badge) return;
+        const user = AUTH.getUser();
+        if (!user || user.role !== "admin") { badge.style.display = "none"; return; }
+        json(API.reviewQueue, { method: "GET" }).then(function (data) {
+            let pending = 0;
+            if (data && data.counts && typeof data.counts.pending_review === "number") {
+                pending = data.counts.pending_review;
+            } else if (data && Array.isArray(data.queue)) {
+                pending = data.queue.length;
+            }
+            badge.textContent = pending > 99 ? "99+" : String(pending);
+            badge.style.display = pending > 0 ? "" : "none";
+        }).catch(function () { badge.style.display = "none"; });
+    }
+
     /* ========== 初始化 ========== */
     initTheme();
+    bindHero();
     renderUserArea();
     loadStats();
     loadDashboard();
+    loadReviewBadge();
     setupQuickModelSwitcher();
     loadQuickModel();
 
