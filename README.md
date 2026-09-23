@@ -8,7 +8,26 @@
 
 ## 界面预览
 
-![控制台](docs/screenshots/home.png) · ![智能问答](docs/screenshots/chat.png)
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/home.png" alt="控制台"><br><sub><b>控制台</b> — 202 文档 / 2086 分片 / Token 用量与缓存命中</sub></td>
+    <td width="50%"><img src="docs/screenshots/chat.png" alt="智能问答"><br><sub><b>智能问答</b> — 引用溯源（点击查看原文）+ 阶段耗时 3.9s</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/knowledge-bases.png" alt="知识库管理"><br><sub><b>知识库管理</b> — 8 部门库 + 默认库，按部门授权</sub></td>
+    <td><img src="docs/screenshots/model-switch.png" alt="模型热切换"><br><sub><b>模型热切换</b> — DeepSeek / Qwen / GPT / Kimi / MiMo 分组，会话内直接切换</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/system-test.png" alt="系统测试"><br><sub><b>系统测试</b> — 意图路由与 ReAct 工具调用轨迹可视化</sub></td>
+    <td><img src="docs/screenshots/model-settings.png" alt="模型设置"><br><sub><b>模型设置</b> — LLM 与 Embedding 运行时配置，保存即生效</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/users.png" alt="用户管理"><br><sub><b>用户管理</b> — JWT 认证 + 部门白名单三级权限</sub></td>
+    <td><img src="docs/screenshots/settings.png" alt="系统设置"><br><sub><b>系统设置</b> — 系统运行信息与用户反馈管理</sub></td>
+  </tr>
+</table>
+
+<sub>入库审核工作台（前端 P2 规划中）等其余页面截图见 [`docs/screenshots/`](docs/screenshots/)。</sub>
 
 ## 核心亮点
 
