@@ -150,8 +150,12 @@ def delete_document(
         from src.review.store import get_review_store
 
         get_review_store().remove(doc_id)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        # 不吞异常：主操作（删文档）已成功，清理失败不回滚，但会留下孤儿审核记录
+        logger.warning(
+            "删除文档后清理审核记录失败（可能残留孤儿记录）：%s (%s)", doc_id, e,
+            exc_info=True,
+        )
     return {"ok": True, "doc_id": doc_id, "kb_id": kb_id}
 
 

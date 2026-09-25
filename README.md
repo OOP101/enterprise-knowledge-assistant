@@ -3,7 +3,7 @@
 将 SOP、技术文档转化为可查询的知识库，员工提问即可秒级获取标准答案。2.0 升级为可观测、可评估、可扩展的多知识库 RAG 平台；3.0 新增入库审核流（AI 预筛打分 + 人工把关）；4.0 完成 UI「科技蓝」改版（默认浅色主题，P1 已合入）。
 
 > 📌 **完整项目文档**（背景/架构/进度/踩坑/数据口径）见 [`docs/项目文档.md`](docs/项目文档.md)。
-> 📌 **开发手册**（全程关键节点开发日志，11 篇）见 [`docs/开发手册/`](docs/开发手册/README.md)。
+> 📌 **开发手册**（全程关键节点开发日志，12 篇）见 [`docs/开发手册/`](docs/开发手册/README.md)。
 > 📌 **版本变更**见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 界面预览
@@ -129,4 +129,4 @@ uvicorn serve.main:app --reload --port 8008
 pytest tests/
 ```
 
-75 个用例全离线可跑（FakeCollection / FakeVS 替代真实 ChromaDB，无需 API Key）。
+82 个用例全离线可跑（FakeCollection / FakeVS 替代真实 ChromaDB，无需 API Key）。

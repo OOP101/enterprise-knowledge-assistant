@@ -6,12 +6,15 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request, status
 
 from config.settings import settings
 from src.auth.jwt import decode_token
+
+logger = logging.getLogger(__name__)
 
 
 def get_token_from_header(request: Request) -> str | None:
@@ -40,8 +43,15 @@ def _build_user(payload: dict) -> dict:
                 user["role"] = stored.get("role", role)
                 user["department"] = stored.get("department", "")
                 user["extra_kbs"] = stored.get("extra_kbs", [])
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 不吞异常：用户库不可用时降级为"仅含 username/role"的最小权限结构
+            # （不含部门/额外授权 = 权限收窄，不会放宽），但必须留痕
+            logger.warning(
+                "回查用户存储失败，降级为最小权限上下文（username=%s）：%s",
+                username,
+                e,
+                exc_info=True,
+            )
     return user
 
 

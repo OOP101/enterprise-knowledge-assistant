@@ -12,12 +12,15 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from functools import lru_cache
 from typing import Any
 
 from config.settings import settings
 from src.agent.tools import TOOL_REGISTRY, list_workflows, query_knowledge
+
+logger = logging.getLogger(__name__)
 
 # 流程动作关键词
 _ACTION_WORDS = {
@@ -86,8 +89,9 @@ def classify_intent_with_llm(user_input: str, llm: Any) -> str:
         text = text.strip().lower()
         if text in ("query", "action", "list"):
             return _refine_llm_intent(text, user_input)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        # 不吞异常：LLM 分类失败会静默退回规则分类，结果可能不同，必须留痕
+        logger.warning("LLM 意图分类失败，回退规则分类：%s", e, exc_info=True)
     return classify_intent(user_input)
 
 
@@ -151,8 +155,9 @@ def _persist_action_memory(session_id: str, user_input: str, res: dict) -> None:
             "user",
             f"用户发起了【{res['workflow']}】申请，工单号 {res['ticket_id']}（原话：{user_input}）",
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        # 不吞异常：流程结果没能沉淀进长期记忆 → 后续追问会"失忆"
+        logger.warning("流程结果写入长期记忆失败：%s", e)
 
 
 class SimpleAgent:

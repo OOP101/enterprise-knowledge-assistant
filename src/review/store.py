@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import os
 import threading
 from pathlib import Path
 from typing import Any
 
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 REVIEW_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "review_store.json"
 
@@ -73,8 +76,9 @@ class ReviewStore:
         try:
             if p.exists():
                 return p.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 不吞异常：读失败会被上层当成"无原文"，审核对比页会显示空白
+            logger.debug("读取原文缓存失败（按无缓存处理）：%s %s", p, e)
         return None
 
     def delete_texts(self, doc_id: str) -> None:
@@ -82,8 +86,9 @@ class ReviewStore:
             p = self._raw_dir / f"{doc_id}.{kind}.txt"
             try:
                 p.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                # 不吞异常：清理失败会留下孤儿原文文件（磁盘持续增长）
+                logger.warning("删除原文缓存失败（可能残留孤儿文件）：%s %s", p, e)
 
     # ---------- 状态机 ----------
 
@@ -234,10 +239,14 @@ class ReviewStore:
 
 
 _store: ReviewStore | None = None
+_store_lock = threading.Lock()
 
 
 def get_review_store() -> ReviewStore:
+    """返回全局 ReviewStore（进程级单例）。双检锁防并发重复构造。"""
     global _store
     if _store is None:
-        _store = ReviewStore()
+        with _store_lock:
+            if _store is None:
+                _store = ReviewStore()
     return _store

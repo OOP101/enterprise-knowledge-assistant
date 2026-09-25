@@ -111,6 +111,7 @@ def _regex_extract(text: str, workflow_key: str) -> dict:
 def _llm_extract(text: str, workflow_key: str, llm: Any) -> dict:
     """LLM 结构化提取（LangChain with_structured_output），失败返回空 dict。"""
     try:
+        import datetime
         import json
 
         from langchain_core.prompts import ChatPromptTemplate
@@ -126,7 +127,9 @@ def _llm_extract(text: str, workflow_key: str, llm: Any) -> dict:
             [
                 (
                     "system",
-                    "从用户话术中提取流程申请参数。今天是 2026-08-30。只提取话术中明确提到的信息，"
+                    "从用户话术中提取流程申请参数。今天是 "
+                    f"{datetime.date.today().isoformat()}。"
+                    "只提取话术中明确提到的信息，"
                     "没有提到的字段不要编造、不要放进 params。日期用 YYYY-MM-DD 格式。\n"
                     f"需要提取的字段：\n{field_desc}",
                 ),
@@ -137,7 +140,8 @@ def _llm_extract(text: str, workflow_key: str, llm: Any) -> dict:
         result: WorkflowDraft = chain.invoke({"text": text})
         return {k: v for k, v in (result.params or {}).items() if v not in (None, "")}
     except Exception as e:  # noqa: BLE001
-        logger.debug("LLM 参数提取失败，回退规则提取：%s", e)
+        # 不吞异常：LLM 提取失败会静默退回正则提取（可能漏字段），必须留痕
+        logger.warning("LLM 参数提取失败，回退规则提取：%s", e)
         return {}
 
 

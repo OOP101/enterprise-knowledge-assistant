@@ -38,7 +38,8 @@ def prepare_query(question: str, history: list, llm: Any) -> str:
         text = text.strip('"「」').splitlines()[0].strip() if text else ""
         return text or question
     except Exception as e:  # noqa: BLE001
-        logger.debug("查询准备失败，回退原问题：%s", e)
+        # 不吞异常：指代消解/改写失败会退回原问题，多轮问答质量明显下降
+        logger.warning("查询准备失败，回退原问题：%s", e)
         return question
 
 
@@ -48,7 +49,8 @@ def _recall_long_memory(session_id: str, question: str) -> list[str]:
         vm = get_container().get_vector_memory()
         return vm.recall(question, top_k=settings.long_memory_top_k)
     except Exception as e:  # noqa: BLE001
-        logger.debug("长期记忆注入失败：%s", e)
+        # 不吞异常：长期记忆注入失败 = 回答缺上下文，但服务仍"看起来正常"
+        logger.warning("长期记忆注入失败：%s", e)
         return []
 
 

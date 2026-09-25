@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import threading
 from functools import lru_cache
 from typing import Any
 
@@ -23,15 +24,30 @@ class Container:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._singletons: dict[str, Any] = {}
+        # 单例装配锁：FastAPI 同步端点跑在线程池，并发首访会同时进入
+        # "key 不存在" 分支 → 重复构造 BGE / Chroma 客户端
+        # （重复加载模型 = 内存翻倍，且两个实例各自持缓存互相覆盖）。
+        # 用 RLock 而非 Lock：工厂内部会嵌套调用（get_retriever → get_reranker、
+        # get_vector_memory → get_embedding），普通 Lock 会自锁死。
+        self._lock = threading.RLock()
 
     # ---- 覆盖注入（测试用）----
     def override(self, key: str, impl: Any) -> None:
-        self._singletons[key] = impl
+        with self._lock:
+            self._singletons[key] = impl
 
     def _get_or_create(self, key: str, factory: Any) -> Any:
-        if key not in self._singletons:
-            self._singletons[key] = factory()
-        return self._singletons[key]
+        """按 key 取单例，缺失则调 factory 构造。
+
+        构造放在锁内：工厂可能是秒级的模型加载，锁外执行会并发重复构造。
+        构造失败时不写入缓存，异常向上传播、下次调用重试。
+        """
+        if key in self._singletons:
+            return self._singletons[key]
+        with self._lock:
+            if key not in self._singletons:
+                self._singletons[key] = factory()
+            return self._singletons[key]
 
     # ---- Embedding ----
     def get_embedding(self) -> Any:

@@ -177,8 +177,9 @@ def _build_graph(llm: Any, kb_id: str, max_iterations: int):
                 try:
                     data = json.loads(content)
                     sources.extend(data.get("sources", []) or [])
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    # 不吞异常：解析失败 = 最终回答会丢失引用出处（用户看不到来源）
+                    logger.warning("解析 query_knowledge 工具结果失败，本次引用出处将缺失：%s", e)
 
             from langchain_core.messages import ToolMessage
 
@@ -280,7 +281,9 @@ def run_react_agent(
                 user_input, top_k=settings.long_memory_top_k
             )
         except Exception as e:  # noqa: BLE001
-            logger.debug("长期记忆注入失败：%s", e)
+            # 不吞异常：长期记忆注入失败会让回答"看起来正常但缺上下文"。
+            # 走 warning 而非 debug（热路径，不带堆栈避免刷屏）。
+            logger.warning("长期记忆注入失败：%s", e)
 
         graph, tools = _build_graph(llm, kb_id, max_iterations)
         system = build_system_prompt(tools, long_memory, history)
@@ -305,7 +308,8 @@ def run_react_agent(
         try:
             memory.add_turn(session_id, user_input, answer)
         except Exception as e:  # noqa: BLE001
-            logger.debug("会话记忆写入失败：%s", e)
+            # 不吞异常：写入失败 = 多轮对话上下文丢失，用户无感知
+            logger.warning("会话记忆写入失败（多轮上下文将丢失）：%s", e)
 
         return {
             "intent": "agent",

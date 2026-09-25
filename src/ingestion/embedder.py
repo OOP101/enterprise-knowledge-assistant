@@ -80,8 +80,9 @@ def repair_chroma_segments() -> int:
                 shutil.rmtree(seg_dir)
                 removed += 1
                 logger.warning("已清理半初始化向量段目录（将从写入队列自动回填）：%s", sid)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                # 不吞异常：清理不掉 → 该段会一直是"无 .bin"状态，查询持续报错
+                logger.warning("清理半初始化向量段目录失败（该段仍不可用）：%s %s", sid, e)
     return removed
 
 
@@ -147,13 +148,18 @@ def _chunk_hash(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
+# 异常处理口径（本模块统一）：
+#   - 探测/读取类（查重、定位 doc_id、读分片哈希、读原文）→ 失败可降级，记 debug；
+#   - 写入/删除类（删分片、删文档、清缓存）→ 失败会留下脏数据或不一致，必须记 warning。
+# 依据项目规约「静默失败是头号敌人」：任何 except 都要留痕，差别只在级别。
 def _doc_exists_by_hash(vs: Any, content_hash: str) -> bool:
     """检查向量库中是否已存在相同内容 hash 的文档。"""
     try:
         collection = vs._collection
         found = collection.get(where={"content_hash": content_hash}, limit=1)
         return bool(found.get("ids"))
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        logger.debug("内容查重跳过（按未存在处理）：%s", e)
         return False
 
 
@@ -173,8 +179,8 @@ def _find_doc_id_by_filename(vs: Any, filename: str) -> str | None:
         if ids:
             metas = found.get("metadatas", []) or []
             return metas[0].get("doc_id") if metas else None
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logger.debug("按 source 精确定位 doc_id 失败，转兜底匹配：%s", e)
 
     # 兜底：遍历元数据匹配 basename（source 可能是完整路径）
     try:
@@ -187,8 +193,8 @@ def _find_doc_id_by_filename(vs: Any, filename: str) -> str | None:
             src = str(meta.get("source", ""))
             if src.split("/")[-1].split("\\")[-1] == filename:
                 return meta.get("doc_id")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logger.debug("按文件名兜底匹配 doc_id 失败（按新文档处理）：%s", e)
     return None
 
 
@@ -210,7 +216,8 @@ def _get_chunk_hashes_by_doc_id(vs: Any, doc_id: str) -> dict[str, str]:
             if meta.get("chunk_hash"):
                 result[cid] = meta["chunk_hash"]
         return result
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        logger.debug("读取分片哈希失败（退化为整文档重建）：%s", e)
         return {}
 
 
@@ -226,7 +233,7 @@ def _delete_ids(vs: Any, ids: list[str]) -> None:
         try:
             vs.delete(ids=ids)
         except Exception as e:  # noqa: BLE001
-            logger.debug("分片删除跳过（%s）", e)
+            logger.warning("分片删除失败（旧分片可能残留）：%s", e)
 
 
 def ingest_documents(
@@ -335,8 +342,9 @@ def ingest_documents(
         try:
             from src.retrieval.cache import get_query_cache
             get_query_cache().invalidate_kb(kb_id)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 不吞异常：缓存未失效 → 入库后仍返回旧答案
+            logger.warning("入库后查询缓存失效失败（可能返回过期答案）：kb=%s %s", kb_id, e)
 
     logger.info(
         "入库完成：doc_id=%s source=%s 共 %d 块（新增 %d，复用 %d，删除 %d）耗时 %.2fs",
@@ -368,10 +376,10 @@ def _delete_by_doc_id(vs: Any, doc_id: str) -> None:
         # 内存向量库等无 _collection 的实现，尝试直接 delete
         try:
             vs.delete(ids=None)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("整库清空式删除不可用（%s），交由上层整文档重建", e)
     except Exception as e:  # noqa: BLE001
-        logger.debug("增量删除跳过（可能无历史）：%s", e)
+        logger.warning("增量删除旧分片失败（可能残留旧分片导致重复召回）：%s", e)
 
 
 def remove_document(doc_id: str, kb_id: str = "default") -> bool:
@@ -384,8 +392,9 @@ def remove_document(doc_id: str, kb_id: str = "default") -> bool:
         try:
             from src.retrieval.cache import get_query_cache
             get_query_cache().invalidate_kb(kb_id)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 不吞异常：缓存未失效会把已删除文档的答案继续返回给用户
+            logger.warning("删除文档后查询缓存失效失败（可能返回过期答案）：kb=%s %s", kb_id, e)
         logger.info("已删除文档：%s（kb=%s）", doc_id, kb_id)
         return True
     except Exception as e:  # noqa: BLE001

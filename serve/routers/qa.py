@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import AsyncIterator, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +21,8 @@ from src.prompts.templates import QA_SYSTEM
 from src.utils.helpers import format_sources
 
 router = APIRouter(prefix="/api/qa", tags=["问答"])
+
+logger = logging.getLogger(__name__)
 
 
 def _bind_session(session_id: str, user: dict | None) -> str:
@@ -68,8 +71,12 @@ def _save_chat(user: dict | None, session_id: str, question: str,
             username, session_id, "assistant", answer,
             sources=[{"source": s.get("source", "")} for s in (sources or [])],
         )
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        # 不吞异常：答案已生成、不应因历史落盘失败而失败，但必须留痕
+        # （否则用户看不到历史，日志里也查不到原因）
+        logger.warning(
+            "对话历史保存失败（答案已返回，历史将缺失）：session=%s %s", session_id, e
+        )
 
 
 class Question(BaseModel):
@@ -316,8 +323,8 @@ def _generate_followups(llm: Any, question: str, answer: str) -> list[str]:
             cleaned = [str(x).strip() for x in items if str(x).strip()][:3]
             if cleaned:
                 return cleaned
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logger.debug("追问建议解析失败，使用默认建议：%s", e)
     return list(DEFAULT_FOLLOWUPS)
 
 
@@ -362,8 +369,9 @@ def chat_stream(
                     sources_data = event.get("sources", [])
                 elif event.get("type") == "token":
                     answer_text += event.get("content", "")
-            except Exception:
-                pass
+            except Exception as e:
+                # 单个 SSE 事件解析失败不影响透传（原始 chunk 照发），仅留痕
+                logger.debug("SSE 事件解析跳过：%s", e)
             yield chunk
         _save_chat(user, body.session_id, body.question, answer_text, sources_data)
 

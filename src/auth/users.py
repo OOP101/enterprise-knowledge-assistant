@@ -5,12 +5,16 @@ import datetime
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
+import shutil
 import threading
 from pathlib import Path
 
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_USERS_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "users.json"
 
@@ -21,6 +25,21 @@ _roles = {"user": _ROLE_DEFAULT, "admin": _ROLE_ADMIN}
 
 # 密码安全策略
 MIN_PASSWORD_LEN = 8
+# 弱口令黑名单：出现在预置配置或注册请求中一律拒绝
+# （含项目自带默认值，防止"改了文档没改 .env"这类回归）
+_WEAK_PASSWORDS = frozenset(
+    {
+        "admin123",
+        "12345678",
+        "123456789",
+        "password",
+        "passw0rd",
+        "qwerty123",
+        "changeme",
+        "change-me-in-prod",
+        "admin888",
+    }
+)
 # scrypt 参数：N=2^14 约 50ms/次，仅登录/注册时调用，可接受
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
@@ -70,6 +89,8 @@ def _validate_password(password: str) -> None:
         raise ValueError("密码不能为空")
     if len(password) < MIN_PASSWORD_LEN:
         raise ValueError(f"密码长度至少 {MIN_PASSWORD_LEN} 位")
+    if password.strip().lower() in _WEAK_PASSWORDS:
+        raise ValueError("该密码属于常见弱口令，请更换为更复杂的密码")
 
 
 class UserStore:
@@ -79,16 +100,54 @@ class UserStore:
         self._path = path or DEFAULT_USERS_FILE
         self._lock = threading.Lock()
         self._users: dict[str, dict] = {}
+        # 加载失败后置 True：进入只读降级，禁止任何写回（见 _load 注释）
+        self._degraded = False
         self._load()
 
     def _load(self) -> None:
+        """从磁盘加载用户表。
+
+        ⚠️ 解析失败时**绝不静默清空**：`self._users = {}` + 后续任意一次 `_save()`
+        会把空表覆盖回磁盘 → 全部账号**永久丢失**且无任何痕迹。
+        改为：ERROR 日志（带堆栈）+ 备份损坏文件 + 进入只读降级模式阻断写回。
+        """
+        if not self._path.exists():
+            return
         try:
-            if self._path.exists():
-                self._users = json.loads(self._path.read_text(encoding="utf-8"))
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"用户表根节点应为对象，实际为 {type(data).__name__}"
+                )
+            self._users = data
+        except Exception as e:  # noqa: BLE001
+            self._degraded = True
+            backup = self._backup_corrupt_file()
+            logger.error(
+                "用户表加载失败（%s），已进入只读降级模式：禁止写回以防覆盖原始数据。"
+                "原始文件已备份至 %s，请人工修复后重启服务。",
+                e,
+                backup,
+                exc_info=True,
+            )
+
+    def _backup_corrupt_file(self) -> str:
+        """把损坏的用户表另存一份（保留原始字节，便于人工抢救）。"""
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        dst = self._path.with_suffix(self._path.suffix + f".corrupt-{stamp}")
+        try:
+            shutil.copy2(self._path, dst)
+            return str(dst)
         except Exception:  # noqa: BLE001
-            self._users = {}
+            logger.exception("备份损坏的用户表失败：%s", self._path)
+            return "(备份失败)"
 
     def _save(self) -> None:
+        if self._degraded:
+            raise RuntimeError(
+                f"用户表处于只读降级模式（{self._path} 加载失败且已备份），"
+                "拒绝写回以避免覆盖原始数据。请人工修复原文件后重启服务。"
+            )
         # 原子写：先写临时文件再 os.replace，避免进程中断产生半截 JSON
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
@@ -204,10 +263,19 @@ class UserStore:
 
 
 _store: UserStore | None = None
+_store_lock = threading.Lock()
 
 
 def get_user_store() -> UserStore:
+    """返回全局 UserStore（进程级单例）。
+
+    双检锁：FastAPI 同步端点跑在线程池里，首次并发调用会同时进入
+    `_store is None` 分支 → 各自 new 一个 UserStore（重复读盘，且各自持锁，
+    写回时互相覆盖丢更新）。加锁后只构造一次。
+    """
     global _store
     if _store is None:
-        _store = UserStore()
+        with _store_lock:
+            if _store is None:
+                _store = UserStore()
     return _store

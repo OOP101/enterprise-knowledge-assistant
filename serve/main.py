@@ -41,8 +41,16 @@ async def lifespan(app: FastAPI):
             from src.ingestion.embedder import repair_chroma_segments
 
             repair_chroma_segments()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 不吞异常：自愈失败不代表启动必须中止，但后续向量查询可能报
+            # 「Error loading hnsw index」，必须留下线索（原实现静默 pass）
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "chroma 向量段自愈失败（后续查询可能报 hnsw index 错误）：%s",
+                e,
+                exc_info=True,
+            )
 
     # 维度校验：检查 Embedding 模型与已有向量库维度是否匹配。
     # 冷启动优化：该步骤会触发 chromadb 导入（数秒），放后台线程执行，
@@ -61,7 +69,9 @@ def _check_security_settings() -> None:
     """启动期安全自检：防止带着默认密钥/默认密码上线。
 
     - 认证开启 + JWT_SECRET 为默认值 → 拒绝启动（可被伪造任意 token）
-    - JWT_SECRET 含 "change-me" / ADMIN_PASSWORD 为默认值 → 强警告
+    - JWT_SECRET 含 "change-me" → 强警告
+    - 管理员口令检测 → 既看 .env 的 ADMIN_PASSWORD，也回查 admin 账号
+      是否仍能用默认口令登录（账号已存在时改 .env 不生效，只查设置会漏判）
     """
     import logging
 
@@ -76,11 +86,26 @@ def _check_security_settings() -> None:
         )
     if "change-me" in settings.jwt_secret:
         logger.warning("⚠ JWT_SECRET 含有 'change-me' 字样，疑似未完全替换，建议更换为强随机密钥")
-    if settings.admin_password == "admin123":
+
+    # 默认管理员口令检测：只比对 .env 会漏判——admin 账号一旦已存在，
+    # 改 .env 的 ADMIN_PASSWORD 不再生效，必须回查账号本身还能否用默认口令登录。
+    weak_admin = settings.admin_password == "admin123"
+    if not weak_admin:
+        try:
+            from src.auth.users import get_user_store
+
+            weak_admin = (
+                get_user_store().verify(settings.admin_username, "admin123") is not None
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("管理员口令自检失败（跳过该项）：%s", e)
+    if weak_admin:
         logger.warning("=" * 68)
-        logger.warning("⚠ 管理员密码仍为默认值 admin123，存在账号被接管风险！")
-        logger.warning("  请修改 .env 中 ADMIN_PASSWORD；若 admin 账号已存在，")
-        logger.warning("  可登录后调用 PATCH /api/auth/{username}/update 或删除 data/users.json 重启")
+        logger.warning(
+            "⚠ 管理员账号 %s 仍可用默认口令 admin123 登录，存在账号被接管风险！",
+            settings.admin_username,
+        )
+        logger.warning("  一键修复：python scripts/rotate_admin_password.py --apply")
         logger.warning("=" * 68)
 
 
@@ -100,12 +125,13 @@ def ensure_admin_user() -> None:
                 department="",
                 extra_kbs=[],
             )
-        except ValueError as e:
-            # 密码不满足强度策略等情况：不阻断启动，提示手动处理
+        except (ValueError, RuntimeError) as e:
+            # 密码不满足强度策略 / 用户表只读降级：不阻断启动，提示手动处理
             import logging
 
             logging.getLogger(__name__).error(
-                "预置管理员账号创建失败：%s（请检查 ADMIN_PASSWORD 是否过短）", e
+                "预置管理员账号创建失败：%s（请检查 ADMIN_PASSWORD 强度，"
+                "或修复 data/users.json 后重启）", e
             )
 
 

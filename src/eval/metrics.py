@@ -33,7 +33,8 @@ def precision(recalled: list[str], gold: list[str]) -> float:
 def f1(recalled: list[str], gold: list[str]) -> float:
     h = hit_rate(recalled, gold)
     p = precision(recalled, gold)
-    if h + p == 0:
+    # h/p 均为非负比率；用 <= 0 判断等价于 h+p==0，且避免浮点等值比较
+    if h <= 0 and p <= 0:
         return 0.0
     return round(2 * h * p / (h + p), 4)
 

@@ -6,12 +6,15 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 DEMO_SYSTEM_PROMPT = (
     "你是企业知识助手。请严格基于给定的参考资料回答问题，"
@@ -228,8 +231,14 @@ class LLMManager:
 
                 data = json.loads(self.CONFIG_FILE.read_text(encoding="utf-8"))
                 self._config.update({k: v for k, v in data.items() if v})
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 不吞异常：配置读不出来会静默用默认模型，用户会以为"切换没生效"
+            logger.warning(
+                "读取模型配置文件失败（将使用默认配置）：%s %s",
+                self.CONFIG_FILE,
+                e,
+                exc_info=True,
+            )
 
     def _save(self) -> None:
         import json
@@ -239,8 +248,14 @@ class LLMManager:
                 json.dumps(self._config, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 不吞异常：写不进去 = 模型切换重启后丢失，界面却显示"已保存"
+            logger.warning(
+                "保存模型配置失败（重启后将丢失本次切换）：%s %s",
+                self.CONFIG_FILE,
+                e,
+                exc_info=True,
+            )
 
     def get_config(self) -> dict:
         return dict(self._config)

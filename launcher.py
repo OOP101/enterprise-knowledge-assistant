@@ -78,8 +78,9 @@ def read_env() -> dict:
                     continue
                 k, _, v = line.partition("=")
                 values[k.strip()] = v.strip().strip('"').strip("'")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        # 不吞异常：.env 解析失败会静默用默认端口/配置启动，排查困难
+        print(f"[warn] 读取 .env 失败（{ENV_FILE}），将使用默认配置：{e}", file=sys.stderr)
     return values
 
 
@@ -227,8 +228,8 @@ def _print_log_tail(n: int = 30):
             for ln in lines:
                 log("  " + ln)
             log("  " + "-" * 52)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] 读取日志尾部失败（{LOG_FILE}）：{e}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------

@@ -128,7 +128,9 @@ def compress_context(
                 futures = [pool.submit(_llm_compress_chunk, doc, query, llm) for doc in docs]
                 compressed = [f.result() for f in futures]
         except Exception as e:
-            logger.debug("LLM 摘要压缩失败，回退规则截断：%s", e)
+            # 不吞异常：LLM 摘要压缩失败会静默降级为规则截断（质量明显下降），
+            # 而"压缩率 21%"的口径来自正常路径，长期失效会让实测口径失真
+            logger.warning("LLM 摘要压缩失败，回退规则截断：%s", e)
             compressed = [_rule_compress_chunk(doc) for doc in docs]
     else:
         compressed = [_rule_compress_chunk(doc) for doc in docs]

@@ -200,10 +200,14 @@ class ChatHistoryStore:
 
 
 _store: ChatHistoryStore | None = None
+_store_lock = threading.Lock()
 
 
 def get_chat_history_store() -> ChatHistoryStore:
+    """返回全局 ChatHistoryStore（进程级单例）。双检锁防并发重复构造。"""
     global _store
     if _store is None:
-        _store = ChatHistoryStore()
+        with _store_lock:
+            if _store is None:
+                _store = ChatHistoryStore()
     return _store

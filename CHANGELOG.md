@@ -8,6 +8,44 @@
 
 ---
 
+## v4.0.1 — 2026-09-25
+
+### 代码审查问题修复（依据阿里云 Open Code Review 全仓审查结论）
+
+全仓扫描 97 文件产出 153 条意见（high 74 / medium 73 / low 6）。**逐条回源码复核后只落修真问题**，抽样 20 条 high 中约 12 条为误报（工具只看路由层不看 store 层、不读被调用方、把 `logger.exception` 当"未处理"等），误报不碰。
+
+#### 安全加固（P0）
+
+- **`src/auth/users.py` `_load()` 不再静默清空用户表**：原实现 `except Exception: self._users = {}`，`users.json` 一旦损坏（半截写入/磁盘满），下一次 `_save()` 会把空表覆盖回磁盘 → **全部账号永久丢失**。改为 ERROR 日志 + 备份 `users.json.corrupt-<时间戳>` + **只读降级模式阻断写回**，原文件不被覆盖；
+- **弱口令黑名单**：`admin123` / `password` / `changeme` 等 9 个常见值禁止被设置为密码（含项目自带默认值，防"改了文档没改 .env"式回归）；
+- **启动自检增强**：管理员口令检测不再只比对 `.env`，而是**回查 admin 账号本身能否用默认口令登录**（账号已存在时改 `.env` 不生效，只查设置会漏判）；
+- **新增 `scripts/rotate_admin_password.py`**：一键轮换管理员口令 + JWT 签名密钥（默认 dry-run，需 `--apply`；自动备份 `.env`）。当前未执行 —— 由用户择机处理。
+
+#### 静默失败整改（P1，项目规约「静默失败是头号敌人」）
+
+**全仓 `except ... : pass / continue` 已清零**（17 处）。分级口径：探测/读取类失败可降级 → `debug`；写入/删除类失败会留脏数据 → `warning`。
+
+- 补日志：`serve/routers/qa.py`（对话历史保存失败、追问问建议解析、SSE 事件解析）、`src/agent/agent.py`（长期记忆写入、LLM 意图分类）、`src/agent/react_agent.py`（长期记忆注入、会话记忆写入、工具结果 sources 解析）、`src/agent/workflow_chain.py`、`src/chains/context_compressor.py`、`src/chains/conversational_qa.py`、`src/auth/deps.py`（回查用户存储失败）、`serve/routers/knowledge.py`（审核记录联动清理）、`serve/main.py`（chroma 向量段自愈）、`src/models/llm.py`（模型配置读写）、`src/review/store.py`（原文缓存读写/删除）、`src/ingestion/embedder.py`（10 处，含查询缓存失效）、`launcher.py`（.env 解析、日志读取）；
+- `logger.debug` → `logger.warning`：`context_compressor` 的 LLM 压缩回退（否则"压缩率 21%"口径长期失真却无感）。
+
+#### 并发安全（P1）
+
+- **`src/core/container.py` `_get_or_create` 加锁**：FastAPI 同步端点跑在线程池，并发首访会重复构造 BGE / Chroma（模型重复加载 = 内存翻倍、双实例缓存互相覆盖）。工厂在锁内执行；用 **`RLock` 而非 `Lock`**——`get_retriever` 的工厂内部会嵌套调 `get_reranker`、`get_vector_memory` 会嵌套调 `get_embedding`，普通锁会**自锁死**；
+- **全部模块级单例改双检锁**：`get_user_store` / `get_chat_history_store` / `get_review_store` / `get_feedback_store`。
+
+#### 其他
+
+- `src/agent/workflow_chain.py`：系统提示硬编码日期 `2026-08-30` → 动态取当天；
+- `src/eval/metrics.py`：F1 计算去掉浮点等值比较 `h + p == 0`，改用非负比率的 `h <= 0 and p <= 0`。
+
+#### 明确判定为误报、未修改（附源码证据）
+
+会话越权（`chat.py` ×4，`chat_history.py` 路径恒由 `username` 锚定）、JWT 算法混淆（`decode_token` 恒用 HMAC-SHA256，从不读 `header["alg"]`）、`tools.py` SSRF（host 来自服务端配置且默认为空）、`upload.py` 路径穿越（`safe_filename = Path(name).name` 已剥离目录）、`auth.py` 的 `settings_ready` NameError（同模块定义，调用时解析）、`token_tracker` 文件写在锁外（`record()` 在锁内调用）、`register` 角色提权（已有 `is_admin_caller` 守卫）、`feedback.py` 读改写非原子（整段在 `self._lock` 内）、`delete_document` 缺 KB 校验（admin 本就全库可见）、`context_compressor` 截断乱码（Python `str` 按码点切片，不会切坏 UTF-8）。
+
+**测试**：**82 个用例全离线通过**（基线 75 + 新增 7：用户表损坏不丢数据 ×3、弱口令拒绝 ×1、单例并发 ×3）。
+
+---
+
 ## v4.0.0 — 2026-09-18
 
 ### UI「科技蓝」改版（P1 已合入）+ 模型通道迁移

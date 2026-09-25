@@ -162,11 +162,14 @@ class FeedbackStore:
 
 
 _store: FeedbackStore | None = None
+_store_lock = Lock()
 
 
 def get_feedback_store() -> FeedbackStore:
-    """返回全局反馈存储实例。"""
+    """返回全局反馈存储实例（双检锁防并发重复构造）。"""
     global _store
     if _store is None:
-        _store = FeedbackStore()
+        with _store_lock:
+            if _store is None:
+                _store = FeedbackStore()
     return _store
